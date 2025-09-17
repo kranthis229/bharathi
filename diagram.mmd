@@ -1,97 +1,56 @@
 flowchart TB
-  %% -------------------
-  %% Edge labels style
-  classDef edgeLabel fill:none, stroke:none, color:#666, font-style:italic
-
-  %% -------------------
-  %% Users & External
+  %% External
   Internet["Internet Users\n(Clients)"]
-  VPN["Enterprise VPN / Admins"]
-  CDN["CDN (optional)\nCloudFront / Akamai"]
-  CICD["CI/CD (GitHub Actions / GitLab / CodePipeline)"]
+  Admin["Admin / Enterprise VPN / SSM"]
+  CDN["CDN (CloudFront)\nOptional"]
+  CICD["CI/CD (GitHub Actions / CodePipeline)"]
 
-  %% -------------------
-  %% VPC & Networking (multi-AZ)
+  %% VPC / Networking
   subgraph VPC["Production VPC — Multi-AZ"]
     direction TB
-
-    subgraph AZ1["AZ-A"]
-      direction LR
-      PUB1["Public Subnet (AZ-A)"]
-      PRV1["Private App Subnet (AZ-A)"]
-      DB1["Private DB Subnet (AZ-A)"]
-    end
-
-    subgraph AZ2["AZ-B"]
-      direction LR
-      PUB2["Public Subnet (AZ-B)"]
-      PRV2["Private App Subnet (AZ-B)"]
-      DB2["Private DB Subnet (AZ-B)"]
-    end
-
     IGW["Internet Gateway"]
-    NAT1["NAT Gateway (AZ-A)"]
-    NAT2["NAT Gateway (AZ-B)"]
+    NAT1["NAT Gateway (AZ1)"]
+    NAT2["NAT Gateway (AZ2)"]
     RT_PUB["Public Route Table"]
     RT_PRV["Private Route Table"]
-    NACL["Network ACLs (stateless)"]
-    FGW["VPC Flow Logs -> CloudWatch / S3"]
+    NACL["Network ACLs"]
+    VPCFlow["VPC Flow Logs -> CloudWatch / S3"]
+
+    subgraph AZ1["AZ-1"]
+      PUB1["Public Subnet (AZ-1)"]
+      PRV1["Private App Subnet (AZ-1)"]
+      DB1["Private DB Subnet (AZ-1)"]
+    end
+
+    subgraph AZ2["AZ-2"]
+      PUB2["Public Subnet (AZ-2)"]
+      PRV2["Private App Subnet (AZ-2)"]
+      DB2["Private DB Subnet (AZ-2)"]
+    end
   end
 
-  Internet -->|HTTPS| CDN
-  CDN --> IGW
-  Internet -->|SSH/HTTPS (admin)\nWAF| IGW
+  %% Public tier
+  ALB["Internet-facing ALB\n(TLS termination)"]
+  WAF["WAF (attached to ALB)"]
+  Shield["AWS Shield"]
+  Bastion["Bastion / Jump Host\n(SSM preferred)"]
+  ECR["ECR (Private registry)"]
+  S3_Static["S3 (Static Assets)\nVersioned & Encrypted"]
 
-  IGW --> PUB1
-  IGW --> PUB2
-  PUB1 --> NAT1
-  PUB2 --> NAT2
-  NAT1 --> PRV1
-  NAT2 --> PRV2
-  PRV1 --> DB1
-  PRV2 --> DB2
-  VPC -.-> NACL
-  VPC -.-> FGW
-
-  %% -------------------
-  %% Public-tier components
-  Bastion["Bastion / Jump Host (with SSM)\n(no direct SSH keys)"]
-  ALB["Internet-facing ALB\n(WAF, HTTPS TLS termination)"]
-  ECR["ECR (private images)"]
-  S3_Public["S3 (Static Assets)\nCloudFront origin, versioning, lifecycle"]
-  VPC --> Bastion
-  PUB1 --> ALB
-  PUB2 --> ALB
-  PUB1 --> ECR
-  PUB1 --> S3_Public
-
-  %% -------------------
-  %% Private-tier: EKS & NodeGroups
-  subgraph EKS_Cluster["Amazon EKS (Private Endpoint)\nCluster Control Plane (Managed)"]
-    direction TB
-    K8S_API["EKS Control Plane (private)\nEndpoint in VPC"]
+  %% EKS control plane + IAM
+  EKS_Cluster["Amazon EKS Cluster\n(Private endpoint)"]
+  subgraph EKS_Control["EKS Control Plane & IAM"]
+    CP["Managed control plane"]
     OIDC["IAM OIDC Provider"]
     IRSA["IRSA (service-account roles)"]
   end
 
-  subgraph Compute["EKS Worker Nodes (private subnets)\nManaged Node Groups & Fargate"]
-    direction TB
-    NodeGroup_App["Node Group - app (spot/ondemand mix)\nASG, taints/tolerations"]
-    NodeGroup_System["Node Group - system (ondemand)"]
-    ClusterAutoscaler["Cluster Autoscaler\nHorizontalPodAutoscaler"]
-    Istio["Istio / Service Mesh\nor alternative (Linkerd)"]
-    CNI["CNI: AWS VPC CNI (IPAM)"]
-    NetworkPolicies["K8s NetworkPolicies\nCalico / Cilium"]
-  end
-
-  RT_PRV --> PRV1
-  RT_PRV --> PRV2
-  PRV1 --> NodeGroup_App
-  PRV2 --> NodeGroup_System
-  EKS_Cluster -->|works with| Compute
-  OIDC --> IRSA
-
-  %% -------------------
-  %% Storage & DB tier
-  RDS["RDS PostgreSQL (Multi-AZ)\nEncrypted (KMS), subnet group, backups,\nread-replica / failover"]
-  ElastiCache["ElastiCache Redis (Cluster Mode)\nMulti-AZ, encryption]()
+  %% Compute
+  subgraph Compute["EKS Compute (private subnets)"]
+    NG_App["Node Group: app (spot + on-demand)"]
+    NG_System["Node Group: system (on-demand)"]
+    Fargate["Fargate Profiles (optional)"]
+    CA["Cluster Autoscaler"]
+    HPA["Horizontal Pod Autoscaler (HPA)"]
+    ServiceMesh["Service Mesh (Istio/Linkerd)"]
+    NetPol["NetworkPolicies (Calic]()
