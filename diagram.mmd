@@ -6,7 +6,7 @@ flowchart TB
   CICD["CI/CD (GitHub Actions / CodePipeline)"]
 
   %% VPC / Networking
-  subgraph VPC["Production VPC — Multi-AZ"]
+  subgraph VPC["Production VPC - Multi-AZ"]
     direction TB
     IGW["Internet Gateway"]
     NAT1["NAT Gateway (AZ1)"]
@@ -46,11 +46,118 @@ flowchart TB
   end
 
   %% Compute
-  subgraph Compute["EKS Compute (private subnets)"]
+  %% (fixed subgraph title to avoid parser issues)
+  subgraph Compute["EKS Compute - private subnets"]
     NG_App["Node Group: app (spot + on-demand)"]
     NG_System["Node Group: system (on-demand)"]
     Fargate["Fargate Profiles (optional)"]
     CA["Cluster Autoscaler"]
     HPA["Horizontal Pod Autoscaler (HPA)"]
     ServiceMesh["Service Mesh (Istio/Linkerd)"]
-    NetPol["NetworkPolicies (Calic]()
+    NetPol["NetworkPolicies (Calico/Cilium)"]
+  end
+
+  %% Data & state
+  RDS["RDS PostgreSQL\nMulti-AZ, encrypted (KMS)"]
+  Redis["ElastiCache Redis\nCluster-mode, Multi-AZ"]
+  Secrets["Secrets Manager / SSM Parameter Store\n(KMS encrypted)"]
+  S3_State["S3 Bucket (Terraform State)\nVersioned + Encrypted"]
+  DynamoDB["DynamoDB (Terraform lock table)"]
+
+  %% VPC Endpoints & Security primitives
+  VPCE_S3["VPC Endpoint: S3"]
+  VPCE_ECR["VPC Endpoint: ECR"]
+  VPCE_SM["VPC Endpoint: Secrets Manager"]
+  IAM["IAM Roles & Policies\nLeast-privilege"]
+  KMS["KMS CMKs (RDS, S3, Secrets)"]
+  GuardDuty["GuardDuty & Security Hub"]
+
+  %% Observability & security tools
+  CloudWatch["CloudWatch Logs & Metrics\nContainer Insights"]
+  Prometheus["Prometheus (k8s)\nremote_write -> long-term store"]
+  Grafana["Grafana"]
+  XRay["X-Ray / OpenTelemetry"]
+  Scanner["Image Scanning (ECR)\nTrivy / Clair"]
+  SIEM["SIEM / Security Ops"]
+
+  %% Terraform repo
+  subgraph Terraform["Terraform (repo)"]
+    Modules["modules/\n(vpc, eks, rds, redis, s3, iam, observability, security)"]
+    Root["root/ (env: prod, stage)\nbackend: s3 + dynamodb"]
+    Terragrunt["Terragrunt / Workspaces (optional)"]
+  end
+
+  %% Connections: external flows
+  Internet -->|HTTPS| CDN
+  CDN -->|HTTPS| ALB
+  Internet -->|Admin (WAF)| ALB
+  Admin -->|SSM| Bastion
+  CICD -->|push image| ECR
+  CICD -->|terraform apply| S3_State
+  CICD -->|deploy manifests| EKS_Cluster
+
+  %% Connections: networking
+  IGW --> PUB1
+  IGW --> PUB2
+  PUB1 --> NAT1
+  PUB2 --> NAT2
+  NAT1 --> PRV1
+  NAT2 --> PRV2
+  PRV1 --> DB1
+  PRV2 --> DB2
+  VPCFlow -.-> CloudWatch
+
+  PUB1 --> ALB
+  PUB2 --> ALB
+  PUB1 --> ECR
+  PUB1 --> S3_Static
+  PUB1 --> Bastion
+
+  %% ALB -> EKS ingress
+  ALB -->|ingress (HTTPS)| EKS_Cluster
+  EKS_Cluster --> CP
+  CP --> OIDC
+  OIDC --> IRSA
+  EKS_Cluster --> Compute
+  Compute --> NG_App
+  Compute --> NG_System
+  Compute --> Fargate
+  NG_App --> HPA
+  NG_System --> CA
+  Compute --> ServiceMesh
+  Compute --> NetPol
+
+  %% Data services in private subnets
+  PRV1 --> RDS
+  PRV2 --> RDS
+  PRV1 --> Redis
+  PRV2 --> Redis
+  PRV1 --> Secrets
+
+  %% VPC endpoints
+  PRV1 --> VPCE_S3
+  PRV2 --> VPCE_ECR
+  PRV1 --> VPCE_SM
+
+  %% Security & encryption
+  S3_State --> DynamoDB
+  S3_State -->|encrypted by| KMS
+  RDS -->|encrypted by| KMS
+  Redis -->|encrypted by| KMS
+  Secrets -->|encrypted by| KMS
+  IAM -->|grants| EKS_Cluster
+  IAM -->|grants| CICD
+  IAM -->|grants| RDS
+  GuardDuty -->|alerts| SIEM
+
+  %% Observability & scanning
+  ECR --> Scanner
+  Scanner --> CICD
+  CloudWatch --> Prometheus
+  Prometheus --> Grafana
+  EKS_Cluster --> XRay
+
+  %% Terraform repo relationships
+  Terraform --> Modules
+  Terraform --> Root
+  Root --> S3_State
