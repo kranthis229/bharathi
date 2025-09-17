@@ -1,50 +1,97 @@
 flowchart TB
-    %% --- NETWORKING ---
-    subgraph VPC["VPC"]
-        direction TB
-        subgraph PublicSubnets["Public Subnets (AZ1 & AZ2)"]
-            IGW["Internet Gateway"]
-            NATGW["NAT Gateways"]
-        end
+  %% -------------------
+  %% Edge labels style
+  classDef edgeLabel fill:none, stroke:none, color:#666, font-style:italic
 
-        subgraph PrivateSubnets["Private Subnets (AZ1 & AZ2)"]
-            EKS["Amazon EKS Cluster"]
-            NodeGroup1["Node Group 1"]
-            NodeGroup2["Node Group 2"]
-            Istio["Istio Service Mesh"]
-            Helm["Helm Deployed Apps"]
+  %% -------------------
+  %% Users & External
+  Internet["Internet Users\n(Clients)"]
+  VPN["Enterprise VPN / Admins"]
+  CDN["CDN (optional)\nCloudFront / Akamai"]
+  CICD["CI/CD (GitHub Actions / GitLab / CodePipeline)"]
 
-            RDS["RDS PostgreSQL (Multi-AZ)"]
-            ElastiCache["ElastiCache Redis Cluster"]
-        end
+  %% -------------------
+  %% VPC & Networking (multi-AZ)
+  subgraph VPC["Production VPC — Multi-AZ"]
+    direction TB
 
-        S3["S3 Buckets (Static Assets + Terraform State)"]
+    subgraph AZ1["AZ-A"]
+      direction LR
+      PUB1["Public Subnet (AZ-A)"]
+      PRV1["Private App Subnet (AZ-A)"]
+      DB1["Private DB Subnet (AZ-A)"]
     end
 
-    %% --- SECURITY ---
-    IAM["IAM Roles & Policies (Least Privilege)"]
-    SG["Security Groups & NACLs"]
-    KMS["KMS Keys (RDS, S3, ElastiCache Encryption)"]
+    subgraph AZ2["AZ-B"]
+      direction LR
+      PUB2["Public Subnet (AZ-B)"]
+      PRV2["Private App Subnet (AZ-B)"]
+      DB2["Private DB Subnet (AZ-B)"]
+    end
 
-    %% --- FLOW ---
-    Internet["Internet Users"]
-    Internet -->|HTTP/HTTPS| IGW
+    IGW["Internet Gateway"]
+    NAT1["NAT Gateway (AZ-A)"]
+    NAT2["NAT Gateway (AZ-B)"]
+    RT_PUB["Public Route Table"]
+    RT_PRV["Private Route Table"]
+    NACL["Network ACLs (stateless)"]
+    FGW["VPC Flow Logs -> CloudWatch / S3"]
+  end
 
-    IGW --> PublicSubnets
-    PublicSubnets -->|NAT| NATGW
-    NATGW --> PrivateSubnets
+  Internet -->|HTTPS| CDN
+  CDN --> IGW
+  Internet -->|SSH/HTTPS (admin)\nWAF| IGW
 
-    EKS --> NodeGroup1
-    EKS --> NodeGroup2
-    EKS --> Istio
-    EKS --> Helm
+  IGW --> PUB1
+  IGW --> PUB2
+  PUB1 --> NAT1
+  PUB2 --> NAT2
+  NAT1 --> PRV1
+  NAT2 --> PRV2
+  PRV1 --> DB1
+  PRV2 --> DB2
+  VPC -.-> NACL
+  VPC -.-> FGW
 
-    PrivateSubnets --> RDS
-    PrivateSubnets --> ElastiCache
-    PrivateSubnets --> S3
+  %% -------------------
+  %% Public-tier components
+  Bastion["Bastion / Jump Host (with SSM)\n(no direct SSH keys)"]
+  ALB["Internet-facing ALB\n(WAF, HTTPS TLS termination)"]
+  ECR["ECR (private images)"]
+  S3_Public["S3 (Static Assets)\nCloudFront origin, versioning, lifecycle"]
+  VPC --> Bastion
+  PUB1 --> ALB
+  PUB2 --> ALB
+  PUB1 --> ECR
+  PUB1 --> S3_Public
 
-    %% --- SECURITY CONNECTIONS ---
-    IAM -.-> EKS
-    IAM -.-> RDS
-    IAM -.-> S3
-    IAM -.-> ElastiCac
+  %% -------------------
+  %% Private-tier: EKS & NodeGroups
+  subgraph EKS_Cluster["Amazon EKS (Private Endpoint)\nCluster Control Plane (Managed)"]
+    direction TB
+    K8S_API["EKS Control Plane (private)\nEndpoint in VPC"]
+    OIDC["IAM OIDC Provider"]
+    IRSA["IRSA (service-account roles)"]
+  end
+
+  subgraph Compute["EKS Worker Nodes (private subnets)\nManaged Node Groups & Fargate"]
+    direction TB
+    NodeGroup_App["Node Group - app (spot/ondemand mix)\nASG, taints/tolerations"]
+    NodeGroup_System["Node Group - system (ondemand)"]
+    ClusterAutoscaler["Cluster Autoscaler\nHorizontalPodAutoscaler"]
+    Istio["Istio / Service Mesh\nor alternative (Linkerd)"]
+    CNI["CNI: AWS VPC CNI (IPAM)"]
+    NetworkPolicies["K8s NetworkPolicies\nCalico / Cilium"]
+  end
+
+  RT_PRV --> PRV1
+  RT_PRV --> PRV2
+  PRV1 --> NodeGroup_App
+  PRV2 --> NodeGroup_System
+  EKS_Cluster -->|works with| Compute
+  OIDC --> IRSA
+
+  %% -------------------
+  %% Storage & DB tier
+  RDS["RDS PostgreSQL (Multi-AZ)\nEncrypted (KMS), subnet group, backups,\nread-replica / failover"]
+  ElastiCache["ElastiCache Redis (Cluster Mode)\nMulti-AZ, encryption]()
