@@ -1,83 +1,50 @@
-graph TD
+flowchart TB
+    %% --- NETWORKING ---
+    subgraph VPC["VPC"]
+        direction TB
+        subgraph PublicSubnets["Public Subnets (AZ1 & AZ2)"]
+            IGW["Internet Gateway"]
+            NATGW["NAT Gateways"]
+        end
 
-%% =========================
-%% NETWORKING LAYER
-%% =========================
-subgraph VPC["AWS VPC (2 AZs)"]
-  direction TB
+        subgraph PrivateSubnets["Private Subnets (AZ1 & AZ2)"]
+            EKS["Amazon EKS Cluster"]
+            NodeGroup1["Node Group 1"]
+            NodeGroup2["Node Group 2"]
+            Istio["Istio Service Mesh"]
+            Helm["Helm Deployed Apps"]
 
-  subgraph PublicSubnets["Public Subnets"]
-    IGW["Internet Gateway"]
-    NAT["NAT Gateway"]
-    ALB["Application Load Balancer"]
-    Jenkins["Jenkins Server (EC2)"]
-  end
+            RDS["RDS PostgreSQL (Multi-AZ)"]
+            ElastiCache["ElastiCache Redis Cluster"]
+        end
 
-  subgraph PrivateSubnets["Private Subnets"]
-    subgraph EKS["Amazon EKS Cluster"]
-      NodeGroup1["Node Group 1"]
-      NodeGroup2["Node Group 2"]
-      Istio["Istio Service Mesh"]
-      Helm["Helm Deployer"]
+        S3["S3 Buckets (Static Assets + Terraform State)"]
     end
 
-    RDS["Amazon RDS (PostgreSQL)"]
-    Redis["Amazon ElastiCache (Redis)"]
-  end
-end
+    %% --- SECURITY ---
+    IAM["IAM Roles & Policies (Least Privilege)"]
+    SG["Security Groups & NACLs"]
+    KMS["KMS Keys (RDS, S3, ElastiCache Encryption)"]
 
-%% =========================
-%% STORAGE + SECRETS
-%% =========================
-S3["Amazon S3 (static assets + Terraform state)"]
-SSM["AWS SSM Parameter Store (Secrets)"]
-KMS["AWS KMS (Encryption Keys)"]
+    %% --- FLOW ---
+    Internet["Internet Users"]
+    Internet -->|HTTP/HTTPS| IGW
 
-%% =========================
-%% CI/CD PIPELINE
-%% =========================
-subgraph CICD["Jenkins Pipeline"]
-  GitHub["GitHub Repository"]
-  Lint["Lint + Unit Tests"]
-  Build["Docker Build & Push to ECR"]
-  TF["Terraform Validate & Apply"]
-  Deploy["Helm Deploy to EKS"]
-  Gemini["Google Gemini Security Scan"]
-end
+    IGW --> PublicSubnets
+    PublicSubnets -->|NAT| NATGW
+    NATGW --> PrivateSubnets
 
-%% =========================
-%% MONITORING & SECURITY
-%% =========================
-CloudWatch["Amazon CloudWatch (Metrics, Logs, Alarms)"]
-SNS["Amazon SNS (Notifications)"]
-Config["AWS Config Rules"]
-GuardDuty["Amazon GuardDuty"]
+    EKS --> NodeGroup1
+    EKS --> NodeGroup2
+    EKS --> Istio
+    EKS --> Helm
 
-%% =========================
-%% RELATIONSHIPS
-%% =========================
-GitHub --> Jenkins
-Jenkins --> Lint --> Build --> TF --> Deploy --> Gemini
-Build --> ECR["Amazon ECR"]
-TF --> S3
-TF --> VPC
-Deploy --> EKS
+    PrivateSubnets --> RDS
+    PrivateSubnets --> ElastiCache
+    PrivateSubnets --> S3
 
-ALB --> Istio
-Istio --> NodeGroup1 & NodeGroup2
-NodeGroup1 --> RDS
-NodeGroup1 --> Redis
-
-EKS --> CloudWatch
-RDS --> CloudWatch
-Redis --> CloudWatch
-Jenkins --> CloudWatch
-
-CloudWatch --> SNS
-Config --> SNS
-GuardDuty --> SNS
-
-SSM --> EKS
-KMS --> RDS
-KMS --> S3
-KMS --> Redis
+    %% --- SECURITY CONNECTIONS ---
+    IAM -.-> EKS
+    IAM -.-> RDS
+    IAM -.-> S3
+    IAM -.-> ElastiCac
