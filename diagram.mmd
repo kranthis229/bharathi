@@ -1,102 +1,83 @@
-flowchart LR
-  subgraph "VPC (multi-AZ)"
-    direction TB
-    IGW[Internet Gateway]
-    PublicSubnetA[Public Subnet AZ-A]
-    PublicSubnetB[Public Subnet AZ-B]
-    PrivateSubnetA[Private Subnet AZ-A]
-    PrivateSubnetB[Private Subnet AZ-B]
-    NAT_A[NAT Gateway AZ-A]
-    NAT_B[NAT Gateway AZ-B]
+graph TD
+
+%% =========================
+%% NETWORKING LAYER
+%% =========================
+subgraph VPC["AWS VPC (2 AZs)"]
+  direction TB
+
+  subgraph PublicSubnets["Public Subnets"]
+    IGW["Internet Gateway"]
+    NAT["NAT Gateway"]
+    ALB["Application Load Balancer"]
+    Jenkins["Jenkins Server (EC2)"]
   end
 
-  subgraph "Management / State"
-    S3State[(S3: terraform-state (versioned, encrypted))]
-    DDBLock[(DynamoDB: tfstate lock)]
-    CodeRepo[(GitHub repo)]
-    GitHubActions[(GitHub Actions)]
+  subgraph PrivateSubnets["Private Subnets"]
+    subgraph EKS["Amazon EKS Cluster"]
+      NodeGroup1["Node Group 1"]
+      NodeGroup2["Node Group 2"]
+      Istio["Istio Service Mesh"]
+      Helm["Helm Deployer"]
+    end
+
+    RDS["Amazon RDS (PostgreSQL)"]
+    Redis["Amazon ElastiCache (Redis)"]
   end
+end
 
-  subgraph "EKS & App (Private)"
-    EKS[EKS Cluster (private)]
-    NodeGroup1[Node Group - spot/on-demand mix]
-    NodeGroup2[Node Group - GPU/worker]
-    Istio[Istio Service Mesh]
-    Helm[Helm Charts]
-    ALB[ALB / AWS Load Balancer Controller]
-    AppPods[App Pods (hello-world microservice)]
-  end
+%% =========================
+%% STORAGE + SECRETS
+%% =========================
+S3["Amazon S3 (static assets + Terraform state)"]
+SSM["AWS SSM Parameter Store (Secrets)"]
+KMS["AWS KMS (Encryption Keys)"]
 
-  subgraph "Data Layer (Private)"
-    RDS[(RDS PostgreSQL Multi-AZ)]
-    Redis[(ElastiCache Redis Cluster)]
-    S3Assets[(S3: static assets)]
-  end
+%% =========================
+%% CI/CD PIPELINE
+%% =========================
+subgraph CICD["Jenkins Pipeline"]
+  GitHub["GitHub Repository"]
+  Lint["Lint + Unit Tests"]
+  Build["Docker Build & Push to ECR"]
+  TF["Terraform Validate & Apply"]
+  Deploy["Helm Deploy to EKS"]
+  Gemini["Google Gemini Security Scan"]
+end
 
-  subgraph "Observability & Ops"
-    CloudWatch[CloudWatch (Metrics, Logs, Dashboards)]
-    LogGroup[(Log Group + Subscription)]
-    LambdaPII[(Lambda: strip PII, triggered by subscription)]
-    SNS[(SNS topic)]
-    AlarmActions[(Alarm actions)]
-    GuardDuty[(GuardDuty)]
-    Config[(AWS Config rules)]
-  end
+%% =========================
+%% MONITORING & SECURITY
+%% =========================
+CloudWatch["Amazon CloudWatch (Metrics, Logs, Alarms)"]
+SNS["Amazon SNS (Notifications)"]
+Config["AWS Config Rules"]
+GuardDuty["Amazon GuardDuty"]
 
-  subgraph "Security"
-    KMS[(KMS keys)]
-    IAM[(IAM roles & policies)]
-    SSM[(SSM Parameter Store - SecureString)]
-  end
+%% =========================
+%% RELATIONSHIPS
+%% =========================
+GitHub --> Jenkins
+Jenkins --> Lint --> Build --> TF --> Deploy --> Gemini
+Build --> ECR["Amazon ECR"]
+TF --> S3
+TF --> VPC
+Deploy --> EKS
 
-  subgraph "Optional ChatOps"
-    ChatLambda[(Lambda: ChatOps - Gemini)]
-    Slack[Slack Webhook]
-  end
+ALB --> Istio
+Istio --> NodeGroup1 & NodeGroup2
+NodeGroup1 --> RDS
+NodeGroup1 --> Redis
 
-  CodeRepo -->|push| GitHubActions
-  GitHubActions -->|terraform fmt/validate & unit tests & gemini scan| CodeRepo
-  GitHubActions --> S3State
-  GitHubActions --> ECR[(ECR repository)]
-  GitHubActions -->|apply non-prod| EKS
-  GitHubActions -->|deploy via helm| Helm
+EKS --> CloudWatch
+RDS --> CloudWatch
+Redis --> CloudWatch
+Jenkins --> CloudWatch
 
-  IGW --> PublicSubnetA
-  IGW --> PublicSubnetB
-  PublicSubnetA --> NAT_A
-  PublicSubnetB --> NAT_B
-  NAT_A --> PrivateSubnetA
-  NAT_B --> PrivateSubnetB
+CloudWatch --> SNS
+Config --> SNS
+GuardDuty --> SNS
 
-  PrivateSubnetA --> EKS
-  PrivateSubnetB --> EKS
-  EKS --> NodeGroup1
-  EKS --> NodeGroup2
-  EKS --> Istio
-  EKS --> AppPods
-  ALB --> AppPods
-  AppPods -->|reads secrets| SSM
-  AppPods -->|stores static| S3Assets
-  AppPods -->|connects| RDS
-  AppPods -->|connects| Redis
-
-  AppPods -->|app logs| CloudWatch
-  EKS -->|infra logs| CloudWatch
-  CloudWatch --> LogGroup
-  LogGroup --> LambdaPII
-  LambdaPII --> S3Assets
-  CloudWatch -->|alarms| SNS
-  SNS --> AlarmActions
-
-  GuardDuty ---|detect threats| CloudWatch
-  Config ---|rules| AlarmActions
-
-  KMS --> RDS
-  KMS --> S3Assets
-  KMS --> Redis
-  IAM --> EKS
-  IAM --> GitHubActions
-
-  ChatLambda -->|uses| Gemini[(Google Gemini API - mock)]
-  ChatLambda --> Slack
-  SNS --> ChatLambda
+SSM --> EKS
+KMS --> RDS
+KMS --> S3
+KMS --> Redis
